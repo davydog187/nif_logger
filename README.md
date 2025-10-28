@@ -1,21 +1,14 @@
 # NifLogger
 
-**TODO: Add description**
+Handling logging from a Rust NIF is a complicated topic. There are many issues with using `println!` or even different logging backends like `env_logger`
 
-## Installation
+https://github.com/rusterlium/rustler/issues/335
+https://github.com/rusterlium/rustler/issues/72
 
-If [available in Hex](https://hex.pm/docs/publish), the package can be installed
-by adding `nif_logger` to your list of dependencies in `mix.exs`:
+Lukas Backström from the OTP team shared that ERTS has its own logger for [forwarding log messages from NIFs to Erlang](https://elixirforum.com/t/logging-from-a-nif/60440). Which can be seen in the [logger_proxy.erl](https://github.com/erlang/otp/blob/master/lib/kernel/src/logger_proxy.erl) module.
 
-```elixir
-def deps do
-  [
-    {:nif_logger, "~> 0.1.0"}
-  ]
-end
-```
+This repo experiments with this approach in Rustler. The idea is that we use a `mpsc` to forward log messages from Rust to an Elixir process that can call Logger.
 
-Documentation can be generated with [ExDoc](https://github.com/elixir-lang/ex_doc)
-and published on [HexDocs](https://hexdocs.pm). Once published, the docs can
-be found at <https://hexdocs.pm/nif_logger>.
-
+- [X] log directly from NIF 
+- [ ] log in background thread
+- [ ] benchmark
