@@ -13,6 +13,7 @@ defmodule NifLogger.Application do
       # Supervisor.child_spec({NifLogger.Loop, type: :println}, id: :println2),
       # Supervisor.child_spec({NifLogger.Loop, type: :log}, id: :log1),
       # Supervisor.child_spec({NifLogger.Loop, type: :log}, id: :log2)
+      NifLogger.Logger
     ]
 
     # See https://hexdocs.pm/elixir/Supervisor.html

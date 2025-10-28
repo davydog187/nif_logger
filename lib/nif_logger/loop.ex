@@ -36,15 +36,17 @@ defmodule NifLogger.Loop do
   end
 
   def log(state) do
+    message = "#{inspect(self())} #{state.counter}"
+
     case state.type do
       :elixir ->
-        Logger.info("Logger #{inspect(self())} #{state.counter}")
+        Logger.info("Logger #{message}")
 
       :println ->
-        NifLogger.NIF.print(inspect(self()), state.counter)
+        NifLogger.NIF.print(message)
 
       :log ->
-        NifLogger.NIF.log(inspect(self()), state.counter)
+        NifLogger.NIF.log(message)
     end
 
     Process.send_after(self(), :log, Enum.random(0..state.interval))
