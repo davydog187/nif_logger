@@ -3,16 +3,9 @@ defmodule NifLogger do
   Documentation for `NifLogger`.
   """
 
-  @doc """
-  Hello world.
+  require Logger
 
-  ## Examples
-
-      iex> NifLogger.hello()
-      :world
-
-  """
-  def hello do
-    :world
+  def test do
+    Logger.info("Well 2 + 2 = #{NifLogger.NIF.add(2, 2)}")
   end
 end

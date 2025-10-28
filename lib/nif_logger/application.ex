@@ -8,8 +8,11 @@ defmodule NifLogger.Application do
   @impl true
   def start(_type, _args) do
     children = [
-      # Starts a worker by calling: NifLogger.Worker.start_link(arg)
-      # {NifLogger.Worker, arg}
+      # Supervisor.child_spec({NifLogger.Loop, type: :elixir}, id: :elixir),
+      # Supervisor.child_spec({NifLogger.Loop, type: :println}, id: :println1),
+      # Supervisor.child_spec({NifLogger.Loop, type: :println}, id: :println2),
+      # Supervisor.child_spec({NifLogger.Loop, type: :log}, id: :log1),
+      # Supervisor.child_spec({NifLogger.Loop, type: :log}, id: :log2)
     ]
 
     # See https://hexdocs.pm/elixir/Supervisor.html
