@@ -24,11 +24,6 @@ defmodule NifLogger.Loop do
     log(state)
   end
 
-  def handle_info({:log, message}, state) do
-    Logger.info("HMMM: " <> message)
-    {:noreply, state}
-  end
-
   def handle_info(message, state) do
     Logger.warning("unhandled message #{inspect(message)}")
 

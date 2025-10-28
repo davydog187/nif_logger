@@ -24,3 +24,5 @@ nif_logger-*.tar
 
 # Rust binary artifacts
 /target/
+
+priv/native/*.so
