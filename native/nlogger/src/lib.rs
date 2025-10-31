@@ -1,16 +1,27 @@
-use once_cell::sync::OnceCell;
-use rustler::{Atom, Env, LocalPid, OwnedEnv, Term};
+use rustler::{Atom, Env, LocalPid, NifMap, OwnedEnv, Resource, Term};
 use std::sync::mpsc::{channel, Sender};
 use std::sync::Mutex;
+use std::sync::OnceLock;
 use std::thread;
 
+use std::collections::HashMap;
+
+type StructuredData = HashMap<String, String>;
+
+#[derive(NifMap)]
 struct LogMessage {
     pid: LocalPid,
     level: Atom,
     message: String,
+    kv: StructuredData,
+    line: String,
+    file: String,
 }
 
-static LOG_SENDER: OnceCell<Sender<LogMessage>> = OnceCell::new();
+#[rustler::resource_impl]
+impl Resource for LogMessage {}
+
+static LOG_SENDER: OnceLock<Sender<LogMessage>> = OnceLock::new();
 
 mod atoms {
     rustler::atoms! { ok, nif_logger }
@@ -31,7 +42,7 @@ fn level_to_atom(level: log::Level) -> Atom {
 }
 
 // Global registry to store registered logger PIDs
-static LOGGER_REGISTRY: OnceCell<Mutex<Vec<LocalPid>>> = OnceCell::new();
+static LOGGER_REGISTRY: OnceLock<Mutex<Vec<LocalPid>>> = OnceLock::new();
 
 // Implement the Rust log trait to send to registered BEAM loggers
 struct BeamLogger;
@@ -62,11 +73,33 @@ impl log::Log for BeamLogger {
         let level = level_to_atom(record.level());
         let message = format!("{}", record.args());
 
+        // Extract metadata from record's key_values
+        let mut kv = HashMap::new();
+        let kv_source = record.key_values();
+
+        struct MetadataVisitor<'a>(&'a mut HashMap<String, String>);
+
+        impl<'kvs> log::kv::VisitSource<'kvs> for MetadataVisitor<'_> {
+            fn visit_pair(
+                &mut self,
+                key: log::kv::Key<'kvs>,
+                value: log::kv::Value<'kvs>,
+            ) -> Result<(), log::kv::Error> {
+                self.0.insert(key.to_string(), value.to_string());
+                Ok(())
+            }
+        }
+
+        let _ = kv_source.visit(&mut MetadataVisitor(&mut kv));
+
         // Send to channel - backpressure is handled by the channel
         let _ = sender.send(LogMessage {
             pid,
             level,
             message,
+            kv,
+            line: record.line().map_or_else(String::new, |v| v.to_string()),
+            file: record.file().map_or_else(String::new, |v| v.to_string()),
         });
     }
 
@@ -97,7 +130,7 @@ fn print(message: String) {
 #[rustler::nif]
 fn log(_message: String) -> Atom {
     // Use standard Rust log macros
-    log::debug!("Debug: {}", _message);
+    log::debug!(a = 1, b = 2; "Debug: {}", _message);
     log::info!("Info: {}", _message);
     log::warn!("Warning: {}", _message);
     log::error!("Error: {}", _message);
@@ -114,10 +147,7 @@ fn on_load(_env: Env, _load_data: Term) -> bool {
             let mut env = OwnedEnv::new();
 
             // Try to send, if it fails the process is dead
-            if env
-                .send_and_clear(&msg.pid, |_env| (msg.level, msg.message))
-                .is_err()
-            {
+            if env.send_and_clear(&msg.pid, |_env| &msg).is_err() {
                 // Remove dead PID from registry
                 if let Some(registry) = LOGGER_REGISTRY.get() {
                     if let Ok(mut pids) = registry.lock() {
