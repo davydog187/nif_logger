@@ -1,5 +1,5 @@
 use once_cell::sync::OnceCell;
-use rustler::{Atom, Env, LocalPid, OwnedEnv, ResourceArc, Term};
+use rustler::{Atom, Env, LocalPid, OwnedEnv, Term};
 use std::sync::mpsc::{channel, Sender};
 use std::sync::Mutex;
 use std::thread;
@@ -9,14 +9,6 @@ struct LogMessage {
     level: Atom,
     message: String,
 }
-
-#[derive(Clone)]
-struct LoggerHandle {
-    pid: LocalPid,
-}
-
-#[rustler::resource_impl]
-impl rustler::Resource for LoggerHandle {}
 
 static LOG_SENDER: OnceCell<Sender<LogMessage>> = OnceCell::new();
 
@@ -38,32 +30,44 @@ fn level_to_atom(level: log::Level) -> Atom {
     }
 }
 
-// Global registry to store registered logger handles
-static LOGGER_REGISTRY: OnceCell<Mutex<Vec<ResourceArc<LoggerHandle>>>> = OnceCell::new();
+// Global registry to store registered logger PIDs
+static LOGGER_REGISTRY: OnceCell<Mutex<Vec<LocalPid>>> = OnceCell::new();
 
 // Implement the Rust log trait to send to registered BEAM loggers
 struct BeamLogger;
 
 impl log::Log for BeamLogger {
     fn enabled(&self, _metadata: &log::Metadata) -> bool {
-        LOG_SENDER.get().is_some()
+        LOGGER_REGISTRY.get().is_some()
     }
 
     fn log(&self, record: &log::Record) {
-        if let Some(sender) = LOG_SENDER.get() {
-            if let Some(registry) = LOGGER_REGISTRY.get() {
-                if let Ok(handles) = registry.lock() {
-                    // Send to all registered logger processes
-                    for handle in handles.iter() {
-                        let _ = sender.send(LogMessage {
-                            pid: handle.pid,
-                            level: level_to_atom(record.level()),
-                            message: format!("{}", record.args()),
-                        });
-                    }
-                }
-            }
-        }
+        let Some(sender) = LOG_SENDER.get() else {
+            return;
+        };
+
+        let Some(registry) = LOGGER_REGISTRY.get() else {
+            return;
+        };
+
+        let Ok(pids) = registry.lock() else {
+            return;
+        };
+
+        let Some(&pid) = pids.first() else {
+            return;
+        };
+
+        // Pick only the FIRST registered logger
+        let level = level_to_atom(record.level());
+        let message = format!("{}", record.args());
+
+        // Send to channel - backpressure is handled by the channel
+        let _ = sender.send(LogMessage {
+            pid,
+            level,
+            message,
+        });
     }
 
     fn flush(&self) {}
@@ -73,17 +77,15 @@ static LOGGER: BeamLogger = BeamLogger;
 
 #[rustler::nif]
 fn register_logger(pid: LocalPid) -> Atom {
-    // Create handle and add to registry
-    let handle = ResourceArc::new(LoggerHandle { pid });
     let registry = LOGGER_REGISTRY.get_or_init(|| Mutex::new(Vec::new()));
-    
-    if let Ok(mut handles) = registry.lock() {
-        handles.push(handle);
+
+    if let Ok(mut pids) = registry.lock() {
+        pids.push(pid);
     }
-    
+
     // Test using standard Rust log macros!
     log::info!("Logger registered");
-    
+
     atoms::ok()
 }
 
@@ -106,11 +108,23 @@ fn on_load(_env: Env, _load_data: Term) -> bool {
     // Create the channel for log messages
     let (tx, rx) = channel::<LogMessage>();
 
-    // Spawn the dispatcher thread that sends messages to PIDs
+    // Spawn the dispatcher thread (unmanaged) that sends messages to PIDs
     thread::spawn(move || {
         for msg in rx {
             let mut env = OwnedEnv::new();
-            let _ = env.send_and_clear(&msg.pid, |_env| (msg.level, msg.message));
+
+            // Try to send, if it fails the process is dead
+            if env
+                .send_and_clear(&msg.pid, |_env| (msg.level, msg.message))
+                .is_err()
+            {
+                // Remove dead PID from registry
+                if let Some(registry) = LOGGER_REGISTRY.get() {
+                    if let Ok(mut pids) = registry.lock() {
+                        pids.retain(|pid| *pid != msg.pid);
+                    }
+                }
+            }
         }
     });
 
