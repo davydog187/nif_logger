@@ -11,6 +11,9 @@ defmodule NifLogger.Logger do
 
   @impl GenServer
   def init(_opts) do
+    # Register this process as a logger in Rust
+    :ok = NifLogger.NIF.register_logger(self())
+
     {:ok, %{}}
   end
 

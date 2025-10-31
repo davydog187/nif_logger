@@ -1,6 +1,7 @@
 use once_cell::sync::OnceCell;
-use rustler::{Atom, Env, LocalPid, OwnedEnv, Term};
+use rustler::{Atom, Env, LocalPid, OwnedEnv, ResourceArc, Term};
 use std::sync::mpsc::{channel, Sender};
+use std::sync::Mutex;
 use std::thread;
 
 struct LogMessage {
@@ -8,6 +9,14 @@ struct LogMessage {
     level: Atom,
     message: String,
 }
+
+#[derive(Clone)]
+struct LoggerHandle {
+    pid: LocalPid,
+}
+
+#[rustler::resource_impl]
+impl rustler::Resource for LoggerHandle {}
 
 static LOG_SENDER: OnceCell<Sender<LogMessage>> = OnceCell::new();
 
@@ -29,48 +38,53 @@ fn level_to_atom(level: log::Level) -> Atom {
     }
 }
 
-// Macro to log with NIF logger process
-#[macro_export]
-macro_rules! nif_log {
-    ($env:expr, $level:expr, $($arg:tt)*) => {{
-        if let Some(logger_pid) = $env.whereis_pid(atoms::nif_logger()) {
-            if let Some(sender) = LOG_SENDER.get() {
-                let _ = sender.send(LogMessage {
-                    pid: logger_pid,
-                    level: level_to_atom($level),
-                    message: format!($($arg)*),
-                });
+// Global registry to store registered logger handles
+static LOGGER_REGISTRY: OnceCell<Mutex<Vec<ResourceArc<LoggerHandle>>>> = OnceCell::new();
+
+// Implement the Rust log trait to send to registered BEAM loggers
+struct BeamLogger;
+
+impl log::Log for BeamLogger {
+    fn enabled(&self, _metadata: &log::Metadata) -> bool {
+        LOG_SENDER.get().is_some()
+    }
+
+    fn log(&self, record: &log::Record) {
+        if let Some(sender) = LOG_SENDER.get() {
+            if let Some(registry) = LOGGER_REGISTRY.get() {
+                if let Ok(handles) = registry.lock() {
+                    // Send to all registered logger processes
+                    for handle in handles.iter() {
+                        let _ = sender.send(LogMessage {
+                            pid: handle.pid,
+                            level: level_to_atom(record.level()),
+                            message: format!("{}", record.args()),
+                        });
+                    }
+                }
             }
         }
-    }};
+    }
+
+    fn flush(&self) {}
 }
 
-#[macro_export]
-macro_rules! nif_info {
-    ($env:expr, $($arg:tt)*) => {{
-        $crate::nif_log!($env, log::Level::Info, $($arg)*);
-    }};
-}
+static LOGGER: BeamLogger = BeamLogger;
 
-#[macro_export]
-macro_rules! nif_debug {
-    ($env:expr, $($arg:tt)*) => {{
-        $crate::nif_log!($env, log::Level::Debug, $($arg)*);
-    }};
-}
-
-#[macro_export]
-macro_rules! nif_warn {
-    ($env:expr, $($arg:tt)*) => {{
-        $crate::nif_log!($env, log::Level::Warn, $($arg)*);
-    }};
-}
-
-#[macro_export]
-macro_rules! nif_error {
-    ($env:expr, $($arg:tt)*) => {{
-        $crate::nif_log!($env, log::Level::Error, $($arg)*);
-    }};
+#[rustler::nif]
+fn register_logger(pid: LocalPid) -> Atom {
+    // Create handle and add to registry
+    let handle = ResourceArc::new(LoggerHandle { pid });
+    let registry = LOGGER_REGISTRY.get_or_init(|| Mutex::new(Vec::new()));
+    
+    if let Ok(mut handles) = registry.lock() {
+        handles.push(handle);
+    }
+    
+    // Test using standard Rust log macros!
+    log::info!("Logger registered");
+    
+    atoms::ok()
 }
 
 #[rustler::nif]
@@ -79,11 +93,12 @@ fn print(message: String) {
 }
 
 #[rustler::nif]
-fn log(env: Env, message: String) -> Atom {
-    nif_debug!(env, "NIF {}", message);
-    nif_info!(env, "NIF {}", message);
-    nif_warn!(env, "NIF {}", message);
-    nif_error!(env, "NIF {}", message);
+fn log(_message: String) -> Atom {
+    // Use standard Rust log macros
+    log::debug!("Debug: {}", _message);
+    log::info!("Info: {}", _message);
+    log::warn!("Warning: {}", _message);
+    log::error!("Error: {}", _message);
     atoms::ok()
 }
 
@@ -102,7 +117,10 @@ fn on_load(_env: Env, _load_data: Term) -> bool {
     // Store the sender globally
     LOG_SENDER.set(tx).ok();
 
-    true
+    // Initialize the Rust log system with our BeamLogger
+    log::set_logger(&LOGGER)
+        .map(|()| log::set_max_level(log::LevelFilter::Trace))
+        .is_ok()
 }
 
 rustler::init!("Elixir.NifLogger.NIF", load = on_load);
